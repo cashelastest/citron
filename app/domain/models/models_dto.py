@@ -20,6 +20,8 @@ class TransferDTO:
     id: uuid.UUID
     from_merchant_id: uuid.UUID
     to_merchant_id: uuid.UUID
+    from_merchant_name: str
+    to_merchant_name: str
     currency: str
     amount: Decimal
     fee_amount: Decimal

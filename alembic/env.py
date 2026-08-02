@@ -10,7 +10,11 @@ from app.infrastructure.models.base import Base
 from app.infrastructure.models import *
 
 config = context.config
-config.set_main_option("sqlalchemy.url", settings.database_url)
+
+# A url passed in by the caller wins, so the test suite can migrate its own
+# database; otherwise fall back to the configured one.
+if not config.get_main_option("sqlalchemy.url", None):
+    config.set_main_option("sqlalchemy.url", settings.database_url)
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)

@@ -1,10 +1,12 @@
+import uuid
 from decimal import Decimal
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.infrastructure.models import Balance
 from app.domain.models import BalanceDTO
-
+from app.domain.exceptions import InsufficientFundsError, BalanceNotFoundError
 
 class BalanceRepository:
     def __init__(self, session: AsyncSession):
@@ -49,12 +51,55 @@ class BalanceRepository:
             raise BalanceNotFoundError(merchant_id, currency)
         return balance
 
-    async def debit(self, merchant_id, currency: str, total_amount: Decimal) -> None:
-        balance = await self.get_locked(merchant_id, currency)
-        if balance.amount < total_amount:
-            raise InsufficientFundsError(merchant_id, currency, total_amount, balance.amount)
-        balance.amount -= total_amount
+    async def ensure_exists(self, merchant_id, currency: str) -> None:
+        """Open a zero balance if the merchant has never held this currency.
 
-    async def credit(self, merchant_id, currency: str, amount: Decimal) -> None:
-        balance = await self.get_locked(merchant_id, currency)
-        balance.amount += amount
+        ON CONFLICT DO NOTHING instead of a select-then-insert: two concurrent
+        transfers into the same new currency would otherwise race on
+        uq_merchant_currency and abort the whole transaction.
+        """
+        stmt = (
+            pg_insert(Balance)
+            .values(
+                id=uuid.uuid4(),
+                merchant_id=merchant_id,
+                currency=currency,
+                amount=Decimal("0"),
+            )
+            .on_conflict_do_nothing(constraint="uq_merchant_currency")
+        )
+        await self.session.execute(stmt)
+
+    async def move(
+        self,
+        from_merchant_id,
+        to_merchant_id,
+        currency: str,
+        debit_amount: Decimal,
+        credit_amount: Decimal,
+    ) -> None:
+        """Move funds between two balances within the caller's transaction.
+
+        Both rows are locked in one globally agreed order (sorted by merchant id),
+        so opposite transfers running at the same time queue up instead of
+        deadlocking on SELECT ... FOR UPDATE.
+
+        debit_amount and credit_amount differ by the fee: the sender pays
+        amount + fee, the receiver is credited exactly amount.
+        """
+        await self.ensure_exists(to_merchant_id, currency)
+
+        locked: dict[uuid.UUID, Balance] = {}
+        for merchant_id in sorted((from_merchant_id, to_merchant_id)):
+            locked[merchant_id] = await self.get_locked(merchant_id, currency)
+
+        source = locked[from_merchant_id]
+        target = locked[to_merchant_id]
+
+        if source.amount < debit_amount:
+            raise InsufficientFundsError(
+                from_merchant_id, currency, debit_amount, source.amount
+            )
+
+        source.amount -= debit_amount
+        target.amount += credit_amount

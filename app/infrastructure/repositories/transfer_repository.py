@@ -1,7 +1,8 @@
-from sqlalchemy import select
+from sqlalchemy import Select, select
+from sqlalchemy.orm import aliased
 
-from app.infrastructure.models import Transfer
-from app.domain.models import TransferDTO, TransferRequestRepository
+from app.infrastructure.models import Merchant, Transfer
+from app.domain.models import TransferDTO, TransferRequestRepository, TransferFilter
 
 
 class TransferRepository:
@@ -9,11 +10,13 @@ class TransferRepository:
         self.session = session
 
     @staticmethod
-    def _to_dto(transfer: Transfer) -> TransferDTO:
+    def _to_dto(transfer: Transfer, from_merchant_name: str, to_merchant_name: str) -> TransferDTO:
         return TransferDTO(
             id=transfer.id,
             from_merchant_id=transfer.from_merchant_id,
             to_merchant_id=transfer.to_merchant_id,
+            from_merchant_name=from_merchant_name,
+            to_merchant_name=to_merchant_name,
             currency=transfer.currency,
             amount=transfer.amount,
             fee_amount=transfer.fee_amount,
@@ -23,14 +26,41 @@ class TransferRepository:
             created_at=transfer.created_at,
         )
 
+    @staticmethod
+    def _select_with_names() -> Select:
+        """Transfers joined to both sides, so the API can show names, not UUIDs."""
+        source = aliased(Merchant)
+        target = aliased(Merchant)
+        return (
+            select(Transfer, source.merchant_name, target.merchant_name)
+            .join(source, Transfer.from_merchant_id == source.id)
+            .join(target, Transfer.to_merchant_id == target.id)
+        )
+
+    async def _get_one(self, *conditions) -> TransferDTO | None:
+        result = await self.session.execute(self._select_with_names().where(*conditions))
+        row = result.first()
+        return self._to_dto(*row) if row else None
+
     async def create(self, transfer_data: TransferRequestRepository) -> TransferDTO:
         transfer = Transfer(**transfer_data.__dict__)
         self.session.add(transfer)
+        # Surfaces a duplicate idempotency_key as IntegrityError right here,
+        # while the caller can still roll back and re-read the winning row.
         await self.session.flush()
-        return self._to_dto(transfer)
+        return await self._get_one(Transfer.id == transfer.id)
 
     async def get_by_idempotency_key(self, key: str) -> TransferDTO | None:
-        stmt = select(Transfer).where(Transfer.idempotency_key == key)
-        result = await self.session.execute(stmt)
-        transfer = result.scalar_one_or_none()
-        return self._to_dto(transfer) if transfer else None
+        return await self._get_one(Transfer.idempotency_key == key)
+
+    async def list(self, transfer_filter: TransferFilter) -> list[TransferDTO]:
+        stmt = self._select_with_names()
+        if transfer_filter.from_merchant_id is not None:
+            stmt = stmt.where(Transfer.from_merchant_id == transfer_filter.from_merchant_id)
+        if transfer_filter.to_merchant_id is not None:
+            stmt = stmt.where(Transfer.to_merchant_id == transfer_filter.to_merchant_id)
+        if transfer_filter.currency is not None:
+            stmt = stmt.where(Transfer.currency == transfer_filter.currency)
+
+        result = await self.session.execute(stmt.order_by(Transfer.created_at.desc()))
+        return [self._to_dto(*row) for row in result.all()]
