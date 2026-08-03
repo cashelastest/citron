@@ -1,8 +1,6 @@
 import logging
 from uuid import UUID
 
-from sqlalchemy.exc import IntegrityError
-
 from app.infrastructure.unit_of_work import UnitOfWork
 from app.domain.models import (
     TransferRequest,
@@ -12,7 +10,11 @@ from app.domain.models import (
     TransferListQuery,
 )
 from app.domain.enums import TransferStatus
-from app.domain.exceptions import MerchantNotFoundError, SameMerchantTransferError
+from app.domain.exceptions import (
+    DuplicateIdempotencyKeyError,
+    MerchantNotFoundError,
+    SameMerchantTransferError,
+)
 from app.domain.services.fee_calculator import FeeCalculator
 
 logger = logging.getLogger(__name__)
@@ -87,7 +89,7 @@ class TransferService:
                 },
             )
             return transfer
-        except IntegrityError:
+        except DuplicateIdempotencyKeyError:
             # Another request with the same key won the race and committed first.
             # Rollback is mandatory before any further select: the transaction is
             # aborted, and it also discards the balance changes made above.

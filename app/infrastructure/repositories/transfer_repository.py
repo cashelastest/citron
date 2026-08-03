@@ -1,8 +1,10 @@
 from sqlalchemy import Select, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import aliased
 
 from app.infrastructure.models import Merchant, Transfer
 from app.domain.models import TransferDTO, TransferRequestRepository, TransferFilter
+from app.domain.exceptions import DuplicateIdempotencyKeyError
 
 
 class TransferRepository:
@@ -45,9 +47,14 @@ class TransferRepository:
     async def create(self, transfer_data: TransferRequestRepository) -> TransferDTO:
         transfer = Transfer(**transfer_data.__dict__)
         self.session.add(transfer)
-        # Surfaces a duplicate idempotency_key as IntegrityError right here,
-        # while the caller can still roll back and re-read the winning row.
-        await self.session.flush()
+        try:
+            # Flushing here, rather than at commit, is what lets the collision
+            # surface while the caller can still roll back and re-read.
+            await self.session.flush()
+        except IntegrityError as exc:
+            # idempotency_key carries the only unique constraint on transfers.
+            raise DuplicateIdempotencyKeyError(transfer_data.idempotency_key) from exc
+
         return await self._get_one(Transfer.id == transfer.id)
 
     async def get_by_idempotency_key(self, key: str) -> TransferDTO | None:

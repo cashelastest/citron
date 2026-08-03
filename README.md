@@ -144,13 +144,17 @@ business logic.
 - **Race on the same key:** if two requests with an identical key arrive at
   the same time, both may pass the initial "does it exist" check before
   either has committed. Both will attempt the balance move and the insert;
-  the loser's `INSERT` hits the unique constraint on `idempotency_key` and
-  raises `IntegrityError`. The service catches this, rolls back (which also
-  discards that request's balance changes), re-reads the row the winner just
-  committed, and returns *that* — so both requests converge on the same
-  response and money moves exactly once. This is verified in
+  the loser's `INSERT` hits the unique constraint on `idempotency_key`.
+  `TransferRepository.create` translates that `IntegrityError` into a
+  domain-level `DuplicateIdempotencyKeyError`, which the service catches to
+  roll back (discarding that request's balance changes), re-read the row the
+  winner just committed, and return *that* — so both requests converge on the
+  same response and money moves exactly once. This is verified in
   `tests/test_idempotency.py` with concurrent `asyncio.gather` calls, not
   just sequential retries.
+- The pre-flight lookup is only a fast path. The unique constraint is the
+  actual source of truth, which is why correctness does not depend on the
+  check winning the race.
 
 ## Concurrency strategy
 
@@ -179,6 +183,17 @@ defense:
    instead of check-then-insert, so two concurrent transfers opening the same
    new balance don't abort each other on the unique `(merchant_id, currency)`
    constraint.
+4. **Uniqueness races end as domain errors, not 500s.** Both unique
+   constraints in the schema — `merchants.merchant_name` and
+   `transfers.idempotency_key` — are caught in the repository that owns the
+   insert and re-raised as `MerchantAlreadyExistsError` (409) and
+   `DuplicateIdempotencyKeyError` respectively. The service-level
+   `exists()` check before creating a merchant is a fast path for the common
+   case; under concurrency it is the constraint, not the check, that holds.
+
+Translating driver exceptions inside the repository is deliberate: it keeps
+`app/domain/` free of any SQLAlchemy import, so the service layer only ever
+handles domain types.
 
 All of this is exercised against a **real** Postgres instance in tests (see
 `tests/test_concurrency.py`), including firing many concurrent transfers at
@@ -262,13 +277,6 @@ each other's changes.
   original transfer instead of rejecting the mismatch. Stricter idempotency
   (à la Stripe) would hash/store the original request payload and compare it
   on replay.
-- **Merchant creation has a small check-then-act race.** `MerchantService`
-  checks for an existing name and then inserts; two simultaneous requests
-  for the same new merchant name can both pass the check, and the loser gets
-  an unhandled `IntegrityError` (generic 500) instead of a clean
-  `409 merchant_already_exists`. The equivalent race is already solved for
-  balances via `ON CONFLICT DO NOTHING`; the same pattern could be applied
-  here.
 - **No authentication/authorization** — out of scope for this exercise, but
   a real deployment needs it before any endpoint is reachable outside a
   trusted network.

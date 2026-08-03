@@ -69,6 +69,22 @@ class InvalidIdempotencyKeyError(DomainError):
         super().__init__(f"Invalid idempotency key: {reason}")
 
 
+class DuplicateIdempotencyKeyError(DomainError):
+    """A parallel request with the same key committed first.
+
+    Internal signal: TransferService catches it and returns the winning transfer,
+    so it should never reach the client. The status code is only a safety net.
+    """
+    error_code = "duplicate_idempotency_key"
+    status_code = 409
+
+    def __init__(self, idempotency_key: str):
+        super().__init__(
+            f"Idempotency key '{idempotency_key}' is already used",
+            details={"idempotency_key": idempotency_key},
+        )
+
+
 class InvalidFeeConfigurationError(DomainError):
     """Service misconfiguration, not a client mistake — hence 500."""
     error_code = "invalid_fee_configuration"
