@@ -37,7 +37,7 @@ async def test_small_amounts_never_serialise_in_scientific_notation(
     response = await client.post(
         "/transfers",
         json=transfer_body("alice_store", "bob_shop", "0.000005"),
-        headers={"Idempotency-Key": "dust"},
+        headers={"Idempotency-Key": "key"},
     )
 
     body = response.json()

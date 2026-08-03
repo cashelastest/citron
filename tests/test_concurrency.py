@@ -7,11 +7,6 @@ from tests.conftest import balance_of
 async def test_parallel_spending_never_drives_the_balance_negative(
     client, merchant, transfer_body
 ):
-    """20 requests of 0.1 (0.101 with fee) against a balance of 1.0.
-
-    At most 9 can settle. Whichever ones lose must lose cleanly with 402,
-    and the arithmetic has to add up exactly afterwards.
-    """
     await merchant("alice_store", initial="1")
     await merchant("bob_shop")
     body = transfer_body("alice_store", "bob_shop", "0.1")

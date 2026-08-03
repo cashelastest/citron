@@ -1,5 +1,4 @@
 import asyncio
-import os
 from decimal import Decimal
 from pathlib import Path
 from typing import AsyncIterator
@@ -19,9 +18,7 @@ from app.main import create_app
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
-TEST_DATABASE_URL = os.getenv(
-    "TEST_DATABASE_URL", settings.database_url.rsplit("/", 1)[0] + "/citron_test"
-)
+TEST_DATABASE_URL = settings.test_database_url
 
 
 def _asyncpg_dsn(url: str) -> str:
@@ -42,11 +39,6 @@ def _run_migrations() -> None:
 
 @pytest_asyncio.fixture(scope="session")
 async def engine() -> AsyncIterator:
-    """A real Postgres database, not SQLite.
-
-    The whole point of these tests is SELECT ... FOR UPDATE, ON CONFLICT and
-    NUMERIC(20, 8); on SQLite they would pass while proving nothing.
-    """
     dsn, name = _asyncpg_dsn(TEST_DATABASE_URL).rsplit("/", 1)
     admin = await asyncpg.connect(f"{dsn}/postgres")
     await admin.execute(
@@ -72,8 +64,6 @@ async def session_factory(engine):
 
 @pytest_asyncio.fixture(autouse=True)
 async def clean_tables(engine):
-    """Truncate instead of wrapping each test in a rollback: the concurrency
-    tests need several connections to really commit and see each other."""
     async with engine.begin() as conn:
         await conn.execute(text("TRUNCATE transfers, balances, merchants CASCADE"))
     yield
@@ -97,7 +87,6 @@ async def client(session_factory) -> AsyncIterator[AsyncClient]:
 
 @pytest_asyncio.fixture
 async def merchant(client):
-    """Creates a merchant and returns its name."""
 
     async def _create(name: str, currency: str = "BTC", initial: str = "0") -> str:
         response = await client.post(

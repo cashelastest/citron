@@ -14,9 +14,7 @@ from app.domain.services.fee_calculator import FeeCalculator
         ("0.01", "100", "1.00000000"),
         ("0", "100", "0.00000000"),
         ("0.025", "100", "2.50000000"),
-        # Rounds half up, not half to even: 0.015 -> 0.02, not 0.02/0.01 by parity.
         ("0.5", "0.00000003", "0.00000002"),
-        # Below the smallest representable fee the charge is zero, not a fraction.
         ("0.01", "0.00000001", "0.00000000"),
     ],
 )
